@@ -1,0 +1,112 @@
+from enum import Enum
+
+class Verdict(str, Enum):
+    SUPPORTED_BY_EVIDENCE = "SUPPORTED_BY_EVIDENCE"
+    SUPERSEDED = "SUPERSEDED"
+    CANCELLED = "CANCELLED"
+    CONFLICT = "CONFLICT"
+    UNRESOLVED = "UNRESOLVED"
+
+class EvidenceCoverage(str, Enum):
+    ADEQUATE = "ADEQUATE"
+    PARTIAL = "PARTIAL"
+    INSUFFICIENT = "INSUFFICIENT"
+
+class CriticalField(str, Enum):
+    DEADLINE = "deadline"
+    APPLICATION_URL = "application_url"
+    FEE = "fee"
+    REWARD = "reward"
+    LOCATION_MODE = "location_mode"
+    NOTICE_STATUS = "notice_status"
+    MIN_AGE = "min_age"
+    MAX_AGE = "max_age"
+    MIN_EXPERIENCE_YEARS = "min_experience_years"
+    TEAM_SIZE = "team_size"
+    RESIDENCY = "residency"
+
+class EventType(str, Enum):
+    DECLARES = "DECLARES"
+    CORRECTS = "CORRECTS"
+    AMENDS = "AMENDS"
+    EXTENDS = "EXTENDS"
+    REVISES = "REVISES"
+    ADDS = "ADDS"
+    CANCELS = "CANCELS"
+    REOPENS = "REOPENS"
+    SUPERSEDES = "SUPERSEDES"
+    WITHDRAWS = "WITHDRAWS"
+    INCORPORATES_UNCHANGED_FIELDS = "INCORPORATES_UNCHANGED_FIELDS"
+
+class EventStatus(str, Enum):
+    ACTIVE = "ACTIVE"
+    WITHDRAWN = "WITHDRAWN"
+    SUPERSEDED = "SUPERSEDED"
+
+class ReplacementScope(str, Enum):
+    PARTIAL = "PARTIAL"
+    FULL = "FULL"
+    UNKNOWN = "UNKNOWN"
+
+class ScopeKind(str, Enum):
+    ALL = "ALL"
+    POST = "POST"
+    CATEGORY = "CATEGORY"
+    REGION = "REGION"
+    LOCATION = "LOCATION"
+    UNKNOWN = "UNKNOWN"
+
+class SourceClass(str, Enum):
+    ISSUER_PRIMARY = "ISSUER_PRIMARY"
+    ISSUER_SECONDARY = "ISSUER_SECONDARY"
+    AUTHORIZED_PARTNER = "AUTHORIZED_PARTNER"
+    INDEPENDENT_SECONDARY = "INDEPENDENT_SECONDARY"
+    AGGREGATOR = "AGGREGATOR"
+    SOCIAL_REPOST = "SOCIAL_REPOST"
+    UNKNOWN = "UNKNOWN"
+
+class DocumentRole(str, Enum):
+    ORIGINAL_NOTICE = "ORIGINAL_NOTICE"
+    CORRIGENDUM = "CORRIGENDUM"
+    ADDENDUM = "ADDENDUM"
+    EXTENSION = "EXTENSION"
+    REVISED_NOTICE = "REVISED_NOTICE"
+    CANCELLATION = "CANCELLATION"
+    REOPENING = "REOPENING"
+    FAQ = "FAQ"
+    ANNOUNCEMENT = "ANNOUNCEMENT"
+    MIRROR = "MIRROR"
+    UNKNOWN = "UNKNOWN"
+
+class ParserStatus(str, Enum):
+    PARSED = "PARSED"
+    PARTIAL = "PARTIAL"
+    UNSUPPORTED = "UNSUPPORTED"
+    FAILED = "FAILED"
+
+class ExtractionMethod(str, Enum):
+    DETERMINISTIC = "DETERMINISTIC"
+    LLM_PROPOSED = "LLM_PROPOSED"
+    MANUAL_FIXTURE = "MANUAL_FIXTURE"
+
+class GroundingLevel(str, Enum):
+    EXPLICIT = "EXPLICIT"
+    INFERRED = "INFERRED"
+    UNSUPPORTED = "UNSUPPORTED"
+
+class BindingStrength(str, Enum):
+    STRONG = "STRONG"
+    POSSIBLE = "POSSIBLE"
+    REJECTED = "REJECTED"
+
+class BlockingImpact(str, Enum):
+    NONE = "NONE"
+    POTENTIAL_GOVERNING = "POTENTIAL_GOVERNING"
+    CONFIRMED_GOVERNING = "CONFIRMED_GOVERNING"
+
+class FieldResolutionStatus(str, Enum):
+    RESOLVED = "RESOLVED"
+    CHANGED = "CHANGED"
+    CONFLICT = "CONFLICT"
+    UNRESOLVED = "UNRESOLVED"
+    NOT_APPLICABLE = "NOT_APPLICABLE"

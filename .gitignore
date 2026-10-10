@@ -1,0 +1,34 @@
+# Never commit credentials, raw captured third-party evidence, runtime output.
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.cache/
+runs/
+fixtures/local-captures/
+*.log
+
+# Raw source snapshots can include copyrighted/private content.
+.snapshots/
+.v06_coverage.json
+.v052_coverage.json
+
+.v07_coverage.json
+
+.noticedrift-evidence/
+.noticedrift-test-*/
+*.sqlite3*
+.v071_coverage.json
+
+.v08_coverage.json
+
+.v081_coverage.json
+
+.v084_coverage.json
+
+.v085_coverage.json

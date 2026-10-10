@@ -1,0 +1,13 @@
+[tool.pytest.ini_options]
+pythonpath = ["backend"]
+testpaths = ["backend/tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 110
+
+[project]
+name = "noticedrift"
+version = "0.8.5"
+requires-python = ">=3.11,<3.14"
+description = "Evidence-first notice supersession resolver, bounded SerpApi search, and safe source ingestion"
