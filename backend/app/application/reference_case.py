@@ -44,7 +44,9 @@ def official_reference_case() -> dict:
         "serpapi_run_executed": False,
         "automated_governance_verdict": None,
         "disclosure": (
-            "Real facts reviewed on issuer pages and a visible PDF. Not a captured, "
-            "hash-verified application snapshot; no live SerpApi search performed for this case."
+            "This reference panel contains manually reviewed official-source information; "
+            "it was not produced by an authenticated automated notice-resolution run. "
+            "Separate genuine SerpApi discovery attempts were recorded, but they did not "
+            "establish a verified governing deadline."
         ),
     }

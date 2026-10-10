@@ -53,6 +53,26 @@ def _html_visibility_uncertain(node) -> bool:
     return False
 
 
+def _css_visibility_rules(css: str):
+    """Yield leaf rules with their enclosing at-rule context, not browser state.
+
+    Unknown at-rules and nested selector blocks are also conditional: this
+    static admission subset cannot establish their rendering conditions.
+    """
+    css = re.sub(r'/\*.*?\*/', '', css, flags=re.S)
+    stack = []
+    for token in re.finditer(r'([^{}]*)([{}])', css):
+        if token.group(2) == '{':
+            selector = token.group(1).strip()
+            conditional = bool(stack) or selector.startswith('@')
+            stack.append((selector, token.end(), conditional))
+        elif stack:
+            selector, start, conditional = stack.pop()
+            body = css[start:token.start(2)]
+            if '{' not in body and '}' not in body:
+                yield selector, body, conditional
+
+
 def _parse_text(s: SourceSnapshot) -> ParsedSource:
     if s.content_type == 'text/plain':
         try:
@@ -87,27 +107,33 @@ def _parse_text(s: SourceSnapshot) -> ParsedSource:
             tag.decompose()
     # A style block with hidden rules cannot be silently discarded: record
     # uncertain CSS and remove only selectors understood by our strict parser.
+    hidden_root = False
+    conditional_root = False
     for css in style_rules:
-        conditional = '@media' in css or '@supports' in css
         visibility_rules = 0
-        for selector, body in re.findall(r'([^{}]+)\{([^{}]+)\}', css):
+        for selector, body, conditional in _css_visibility_rules(css):
             body = re.sub(r'\s+', '', body.casefold())
             if any(token in body for token in ('display:none', 'visibility:hidden', 'opacity:0', 'filter:opacity(0)', 'color:transparent', 'font-size:0', 'clip-path:', 'transform:')):
                 visibility_rules += 1
                 try:
                     if re.fullmatch(r'\s*[.#][a-zA-Z_][a-zA-Z0-9_-]*\s*', selector):
                         selector = selector.strip()
-                        hidden_nodes = list(root.select(selector))
-                        # Tag.select excludes the selected root itself.
-                        if selector[0] == '.' and selector[1:] in root.get('class', []):
-                            hidden_nodes.append(root)
-                        if selector[0] == '#' and selector[1:] == root.get('id'):
-                            hidden_nodes.append(root)
-                        if conditional and hidden_nodes:
+                        # Select from the complete document: root.select() cannot
+                        # see a matching ancestor, and CSS applies to both.
+                        hidden_nodes = list(soup.select(selector))
+                        evidence_chain = [root, *root.parents]
+                        root_matches = any(node is ancestor for node in hidden_nodes for ancestor in evidence_chain)
+                        relevant_nodes = [node for node in hidden_nodes
+                                          if any(node is child for child in root.descendants)]
+                        if root_matches:
+                            if conditional:
+                                conditional_root = True
+                            else:
+                                hidden_root = True
+                        if conditional and (root_matches or relevant_nodes):
                             warnings.append('CSS_RESPONSIVE_VISIBILITY_UNVERIFIED')
-                        for hidden in hidden_nodes:
-                            if hidden is not root:
-                                hidden.decompose()
+                        for hidden in relevant_nodes:
+                            hidden.decompose()
                     else:
                         warnings.append('CSS_VISIBILITY_UNVERIFIED')
                 except Exception:
@@ -115,9 +141,16 @@ def _parse_text(s: SourceSnapshot) -> ParsedSource:
         # A nested responsive visibility rule that cannot be mapped to a
         # supported selector must abstain; irrelevant selectors do not taint
         # an otherwise visible notice body.
-        if conditional and visibility_rules == 0 and re.search(
+        if re.search(r'@(media|supports)\b', css, re.I) and visibility_rules == 0 and re.search(
                 r'opacity\s*:|visibility\s*:|display\s*:|filter\s*:|clip(?:-path)?\s*:|transform\s*:', css, re.I):
             warnings.append('CSS_VISIBILITY_UNVERIFIED')
+
+    # Do not let stylesheet ordering obscure a definite exclusion, or turn
+    # conditional root visibility into a claim of unconditional hiding.
+    if hidden_root:
+        return _parsed(s, '', 'UNSUPPORTED', warnings + ['HIDDEN_EVIDENCE_ROOT'])
+    if conditional_root:
+        return _parsed(s, '', 'UNSUPPORTED', warnings)
 
     # Naive flattened tables can swap column identities: preserve text but block definitive admission.
     if root.find('table') is not None:

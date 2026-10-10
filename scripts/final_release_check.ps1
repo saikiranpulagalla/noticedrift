@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Python = 'python',
+    [string]$Python = '',
     [switch]$SkipReleaseVerifier
 )
 
@@ -25,13 +25,30 @@ function Get-FreeLoopbackPort {
 
 function Invoke-LocalJson([string]$Uri, [string]$Method = 'GET', [string]$Body = $null) {
     $params = @{ Uri = $Uri; Method = $Method; TimeoutSec = 5; UseBasicParsing = $true }
-    if ($null -ne $Body) { $params['Body'] = $Body; $params['ContentType'] = 'application/json' }
+    # PowerShell coerces an omitted [string] $null to ''. Do not attach an
+    # empty content-body to GET; Windows PowerShell rejects it before dispatch.
+    if ($PSBoundParameters.ContainsKey('Body')) { $params['Body'] = $Body; $params['ContentType'] = 'application/json' }
     $response = Invoke-WebRequest @params
     return @{ StatusCode = [int]$response.StatusCode; Body = ($response.Content | ConvertFrom-Json) }
 }
 
 Push-Location $repoRoot
 try {
+    # Never resolve a global Python/pip from PATH. All gates and the child
+    # server use this same absolute virtual-environment interpreter.
+    if ([string]::IsNullOrWhiteSpace($Python)) {
+        $Python = Join-Path $repoRoot '.venv\Scripts\python.exe'
+    }
+    elseif (-not [System.IO.Path]::IsPathRooted($Python)) {
+        $Python = Join-Path $repoRoot $Python
+    }
+    if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) {
+        throw 'PROJECT_VENV_PYTHON_MISSING: create the project .venv or supply its explicit Python executable'
+    }
+    $Python = (Resolve-Path -LiteralPath $Python).Path
+    & $Python -c "import sys; sys.exit(0 if sys.prefix != sys.base_prefix and sys.version_info[:2] == (3, 11) else 1)"
+    if ($LASTEXITCODE -ne 0) { throw 'PROJECT_VENV_PYTHON_INVALID: Windows release gate requires a Python 3.11 virtual environment' }
+    Write-Host "Release interpreter: $Python"
     & $Python -m pip check
     if ($LASTEXITCODE -ne 0) { throw 'PIP_CHECK_FAILED' }
 
@@ -59,6 +76,7 @@ try {
 
     $base = "http://127.0.0.1:$port"
     $health = $null
+    $readinessFailure = 'No readiness response'
     $until = (Get-Date).AddSeconds(20)
     while ((Get-Date) -lt $until) {
         try {
@@ -66,6 +84,8 @@ try {
             break
         }
         catch {
+            # Requests contain only the ephemeral localhost health URL.
+            $readinessFailure = $_.Exception.Message
             if ($server.HasExited) { throw "SMOKE_SERVER_EXITED:$($server.ExitCode)" }
             Start-Sleep -Milliseconds 250
         }
@@ -77,7 +97,7 @@ try {
         }
         $stderr = $server.StandardError.ReadToEnd().Trim()
         if ([string]::IsNullOrWhiteSpace($stderr)) { $stderr = 'no server stderr was emitted' }
-        throw "SMOKE_SERVER_NOT_READY:${stderr}"
+        throw "SMOKE_SERVER_NOT_READY:${readinessFailure}; ${stderr}"
     }
     Assert-Equal $health.StatusCode 200 'health status'
     Assert-Equal $health.Body.version 'v0.8.5' 'health version'
@@ -86,11 +106,11 @@ try {
     $landing = Invoke-WebRequest -Uri "$base/" -TimeoutSec 5 -UseBasicParsing
     Assert-Equal ([int]$landing.StatusCode) 200 'landing status'
     foreach ($requiredText in @(
-        'SYNTHETIC · offline fixture',
+        "SYNTHETIC $([char]0x00B7) offline fixture",
         'mocked SerpApi responses',
         'never a live SerpApi response',
         'Recorded live-search diagnostic',
-        'UNRESOLVED · coverage INSUFFICIENT',
+        "UNRESOLVED $([char]0x00B7) coverage INSUFFICIENT",
         'No official page or PDF was fetched, captured, hashed, or authenticated.'
     )) {
         if (-not $landing.Content.Contains($requiredText)) { throw "LANDING_DISCLOSURE_MISSING:$requiredText" }
@@ -113,7 +133,7 @@ try {
 
     $demo = Invoke-LocalJson "$base/api/demo/check" 'POST' '{"supplied_deadline":"2026-10-01"}'
     Assert-Equal $demo.StatusCode 200 'synthetic demo status'
-    Assert-Equal $demo.Body.execution_mode 'SYNTHETIC_OFFLINE' 'synthetic execution mode'
+    Assert-Equal $demo.Body.execution_mode 'SYNTHETIC_OFFLINE_FRESH_REQUESTED' 'synthetic execution mode'
     Assert-Equal $demo.Body.analysis.verdict 'SUPERSEDED' 'synthetic verdict'
     if (@($demo.Body.search_entries | Where-Object { $_.mode -ne 'SYNTHETIC' }).Count -ne 0) {
         throw 'SYNTHETIC_DEMO_CONTAINS_NON_SYNTHETIC_SEARCH_EVIDENCE'

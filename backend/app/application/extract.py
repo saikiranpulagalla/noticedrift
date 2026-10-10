@@ -18,7 +18,16 @@ EXTENSION = re.compile(r"(?i)\b(?:the\s+)?(?:application\s+)?deadline\s+is\s+ext
 CANCELLATION = re.compile(r"(?i)\b(?:this\s+)?(?:recruitment|advertisement|notice)\s+is\s+cancelled\b")
 CHANGE_TERMS = re.compile(r"(?i)\b(?:corrigendum|addendum|amended|modified|revised|extended|extension|withdrawn|cancelled|canceled|reopened|reopening)\b")
 UNSAFE_CONTEXT = re.compile(r'(?i)\b(?:withdrawn|withdrawal|rescinded|revoked|retracted|invalidated|superseded|rumou?r|false|incorrect|not\s+(?:valid|applicable|true)|unconfirmed|alleged|claim\s+is\s+(?:false|incorrect)|quotation|quoted|reader\s+comment|speculation)\b')
-SCOPE_TERMS = re.compile(r"(?i)\b(?:only\s+for|for\s+(?:post|region|category|department)|except\s+for|applicable\s+to)\b")
+# The supported relation is deliberately a complete, operative, whole-notice
+# declaration.  These patterns identify language that instead makes the
+# relation scoped or contingent; unsupported semantics must not become ALL.
+SCOPE_TERMS = re.compile(
+    r"(?i)\b(?:only|solely|exclusively)\s+for\b|\bfor\s+(?:applicants?|candidates?|posts?|categories|regions?|departments?|persons?)\b|\b(?:all\s+)?other\s+(?:applicants?|candidates?|posts?|categories|regions?|departments?)\b|\b(?:except\s+for|applicable\s+to)\b"
+)
+CONDITIONAL_TERMS = re.compile(
+    r"(?i)\b(?:if|unless|subject\s+to|pending|proposed|proposal|tentative|contingent\s+on|upon)\b"
+)
+HISTORICAL_DEADLINE_CONTEXT = re.compile(r"(?i)\b(?:original|previous|old|instead\s+of)\b")
 
 class ExtractionUnresolved(ValueError):
     pass
@@ -49,6 +58,57 @@ def _full_ref_match(parsed: ParsedSource, reference: str) -> bool:
     return len(matches) == 1 and normalize_reference(matches[0]) == normalize_reference(reference)
 
 
+def _relation_is_standalone(text: str, relation: re.Match[str]) -> bool:
+    """Accept only an entire line containing the supported operative relation.
+
+    The compact grammar intentionally refuses added qualifiers rather than
+    guessing whether they limit the notice, a category, or effectiveness.
+    """
+    line_start = text.rfind('\n', 0, relation.start()) + 1
+    line_end = text.find('\n', relation.end())
+    if line_end < 0:
+        line_end = len(text)
+    before = text[line_start:relation.start()].strip()
+    after = text[relation.end():line_end].strip()
+    return not before and not after.strip('.;:')
+
+
+def _relation_has_nearby_condition(text: str, relation: re.Match[str]) -> bool:
+    """Reject a condition directly attached to an otherwise supported relation."""
+    lines = text.splitlines()
+    offset = 0
+    for index, line in enumerate(lines):
+        line_end = offset + len(line)
+        if offset <= relation.start() <= line_end:
+            nearby = [line]
+            if index:
+                nearby.append(lines[index - 1])
+            if index + 1 < len(lines):
+                nearby.append(lines[index + 1])
+            return any(CONDITIONAL_TERMS.search(value) for value in nearby)
+        offset = line_end + 1
+    return True
+
+
+def _screen_extension_deadlines(text: str, relation: re.Match[str]) -> None:
+    """Reject a corrigendum whose other application-deadline claims disagree.
+
+    The FROM date in the extension is historical.  Additional current deadline
+    labels must either repeat the TO date or explicitly identify the old value.
+    """
+    previous = date_value(relation.group(1))
+    current = date_value(relation.group(2))
+    for declaration in ORIGINAL.finditer(text):
+        value = date_value(declaration.group(1))
+        line_start = text.rfind('\n', 0, declaration.start()) + 1
+        context = text[line_start:declaration.start()]
+        if value == current:
+            continue
+        if value == previous and HISTORICAL_DEADLINE_CONTEXT.search(context):
+            continue
+        raise ExtractionUnresolved("CONFLICTING_APPLICATION_DEADLINE")
+
+
 def extract_notice(parsed: ParsedSource, reference: str) -> ExtractedNotice:
     if parsed.status != "PARSED" or not reference or not _full_ref_match(parsed, reference):
         raise ExtractionUnresolved("IDENTITY_OR_PARSER_UNRESOLVED")
@@ -64,6 +124,11 @@ def extract_notice(parsed: ParsedSource, reference: str) -> ExtractedNotice:
     cancelled = list(CANCELLATION.finditer(parsed.text))
     if len(extended) == 1 and not cancelled:
         a = extended[0]
+        if not _relation_is_standalone(parsed.text, a):
+            raise ExtractionUnresolved("QUALIFIED_EXTENSION_UNSUPPORTED")
+        if _relation_has_nearby_condition(parsed.text, a):
+            raise ExtractionUnresolved("CONDITIONAL_NOTICE_UNSUPPORTED")
+        _screen_extension_deadlines(parsed.text, a)
         # Preserve the complete exact relation quotation, not a keyword alone.
         return ExtractedNotice(role=DocumentRole.CORRIGENDUM, issued_at=issued_at,
             reference=reference, deadline=date_value(a.group(2)), deadline_text=a.group(2),

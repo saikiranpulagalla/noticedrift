@@ -44,6 +44,9 @@ def test_reference_case_is_not_laundered_into_live_evidence(client):
     assert c['application_snapshot_verified'] is False
     assert c['serpapi_run_executed'] is False
     assert c['automated_governance_verdict'] is None
+    assert 'manually reviewed' in c['disclosure'].lower()
+    assert 'separate genuine serpapi discovery attempts' in c['disclosure'].lower()
+    assert 'did not establish a verified governing deadline' in c['disclosure'].lower()
     assert c['other_material_change']['machine_verified'] is False
     assert c['other_material_change']['original']=='Physiology'
     assert c['other_material_change']['corrected']=='Psychology'
@@ -106,6 +109,14 @@ def test_offline_demo_never_needs_live_credentials(client,monkeypatch):
     # Health reports the current release, not the earlier v0.8.1 fixture version.
     assert client.get('/health').json()['version']=='v0.8.5'
 
+
+@pytest.mark.asyncio
+async def test_synthetic_demo_uses_exact_fresh_mode_and_synthetic_entries():
+    outcome = await run_demo(date(2026, 10, 1))
+    assert outcome.execution_mode == 'SYNTHETIC_OFFLINE_FRESH_REQUESTED'
+    assert outcome.analysis.verdict is Verdict.SUPERSEDED
+    assert all(entry.mode.value == 'SYNTHETIC' for entry in outcome.search_entries)
+
 def test_live_api_without_credentials_fails_closed(client):
     request = {'issuer_id':'nca-f', 'issuer_name':'National Communications Academy Finance',
                'reference_number':'4-22/Teaching Associate/2026-NCA-F',
@@ -121,7 +132,10 @@ def test_demo_api_rejects_unsupported_payloads(client):
 def test_reference_data_not_dependent_on_api_credentials():
     c=official_reference_case()
     assert c['case_type']=='REAL_OFFICIAL_SOURCE_REFERENCE'
-    assert 'not' in c['disclosure'].lower()
+    assert 'manually reviewed' in c['disclosure'].lower()
+    assert 'separate genuine serpapi discovery attempts' in c['disclosure'].lower()
+    from app.api.site import SITE
+    assert 'Separate live discovery attempts did not establish an authenticated governing deadline.' in SITE
 
 @pytest.mark.asyncio
 async def test_synthetic_mode_never_qualifies_as_live_coverage():
