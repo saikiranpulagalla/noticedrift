@@ -62,6 +62,18 @@ def test_recorded_live_diagnostic_is_sanitized_and_never_claims_source_evidence(
     assert payload['official_source_captures'] == 0
     assert payload['source_evidence_authenticated'] is False
     assert all('query' not in entry and 'url' not in entry for entry in payload['attempts'])
+    assert [(entry['purpose'], entry['status'], entry['elapsed_ms']) for entry in payload['attempts']] == [
+        ('IDENTITY', 'OK', 1547),
+        ('CORE_CORRIGENDUM', 'TIMEOUT', 15016),
+        ('CORE_EXTENSION', 'OK', 937),
+        ('CORE_CANCELLATION', 'TIMEOUT', 15016),
+        ('OFFICIAL_SITE_CORRIGENDUM', 'TIMEOUT', 15016),
+        ('OFFICIAL_SOURCE_IDENTITY', 'TIMEOUT', 15016),
+    ]
+    page = client.get('/').text
+    assert 'Separate live discovery attempts did not establish an authenticated governing deadline.' in page
+    assert 'Identity and core extension discovery' in page
+    assert 'Core corrigendum, cancellation, official-site corrigendum, official-source identity' in page
 
 def test_offline_api_outdated_deadline(client,monkeypatch):
     def no_live(*args,**kwargs):
