@@ -116,19 +116,19 @@ If another application occupies port 8000, use an available localhost port such 
 .\scripts\final_release_check.ps1 -Python .\.venv\Scripts\python.exe
 ```
 
-**Offline and local verification of the repairs published in `33d91f5741be1c8b4d64f29fe64437384b6b38a1`:**
+**Offline and local verification of the repairs published in `3dcdcd9c5caa73f745565fbf2b1f37f85b71f8ad`:**
 
 | Gate | Observed Windows result |
 |---|---|
-| Runtime | Python 3.11.9 |
-| Full suite | **566 passed, 0 failed, 0 skipped** |
-| Exact branch-aware coverage | **95.181066%** |
+| Runtime | Windows Python 3.11.9 |
+| Full suite | **673 passed, 0 failed, 0 skipped** |
+| Exact combined line-and-branch coverage | **95.18072289156626%** |
 | Stability | **3/3 passed** |
-| Focused repair regressions | 23 P0 tests and 20 CSS visibility tests; 146 combined focused checks passed |
-| Dependencies and complete PowerShell checker | **PASS; checker exit 0** |
+| Focused repair regressions | 150 combined focused checks passed, including 23 P0, 20 CSS visibility and 35 new current-governing-contract tests |
+| Dependency check and complete PowerShell checker | **PASS; checker exit 0** |
 | Local HTTP smoke and child-server cleanup | **PASS** |
 
-These results cover the current application repairs, not complete live SerpApi discovery or authenticated government-source resolution. Separate browser visual verification is **not established**. Coverage measures exercised branches, not universal semantic correctness.
+These are **offline and local verification results only**. Live end-to-end SerpApi discovery, authenticated government-source resolution and separate browser visual verification remain **UNVERIFIED**. Coverage measures exercised lines and branches, not universal semantic correctness.
 
 The PowerShell checker defaults to the project's `.venv` Python 3.11 executable, never a global Python selected from PATH. It verifies the exact synthetic execution mode and `SYNTHETIC` search entries as well as the recorded diagnostic's conservative outcome.
 
@@ -210,7 +210,7 @@ Windows repair details and the current local-validation limitations are in
 
 **Important migration for LIVE mode:** issuer-attestation entries must now include `canonical_issuer_name` and `publication_path_prefixes` (operator-reviewed publisher-controlled paths). Without these, the app refuses live readiness. Example manifest and security limitations: `docs/REPAIR_V084.md`.
 
-**Historical release evidence:** Run `.\.venv\Scripts\python.exe scripts\verify_v085.py` for the current gate. It compiles, checks the complete inherited and Round 4/5 adversarial suites with **exact** ≥95% branch-aware coverage, checks the synthetic demo, and repeats tests three times. CI is configured for Linux Python 3.11/3.13 and Windows Python 3.11; configuration alone is not evidence of a passing CI job.
+**Historical release evidence:** Run `.\.venv\Scripts\python.exe scripts\verify_v085.py` for the current gate. It compiles, checks the complete inherited and Round 4/5 adversarial suites with **exact** ≥95% combined line-and-branch coverage, checks the synthetic demo, and repeats tests three times. CI is configured for Linux Python 3.11/3.13 and Windows Python 3.11; configuration alone is not evidence of a passing CI job.
 
 **Unverified:** a complete SerpApi-to-attested-source run, real NCA-F corrigendum source-byte capture and automatic governing proof, browser live E2E, and production-grade resilience under multi-worker traffic. A genuine provider diagnostic exists, but it is incomplete and remains `UNRESOLVED`.
 
@@ -265,7 +265,7 @@ demo contracts, and stops only the server it started:
 .\scripts\final_release_check.ps1 -Python .\.venv\Scripts\python.exe
 ```
 
-The verifier compiles the code, runs the full suite with **exact** ≥95% branch-aware coverage, exercises the E2E demo and repeats the complete test suite three times. No live SerpApi credentials are used. The current published repair passed the complete gate; see the verification table above.
+The verifier compiles the code, runs the full suite with **exact** ≥95% combined line-and-branch coverage, exercises the E2E demo and repeats the complete test suite three times. No live SerpApi credentials are used. The current published repair passed the complete gate; see the verification table above.
 
 ### Routes
 
