@@ -4,6 +4,7 @@ from datetime import datetime
 from enum import Enum
 from hashlib import sha256
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from app.url_credentials import has_url_credentials
 
 class FrozenModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra='forbid')
@@ -37,6 +38,20 @@ class SourceSnapshot(FrozenModel):
     body_sha256: str
     redirect_chain: tuple[str, ...] = ()
     status_code: int = 200
+
+    @field_validator('source_url', 'final_url')
+    @classmethod
+    def credential_free_url(cls, value: str) -> str:
+        if has_url_credentials(value):
+            raise ValueError('CREDENTIAL_BEARING_SOURCE_URL')
+        return value
+
+    @field_validator('redirect_chain')
+    @classmethod
+    def credential_free_redirects(cls, values):
+        if any(has_url_credentials(value) for value in values):
+            raise ValueError('CREDENTIAL_BEARING_SOURCE_URL')
+        return values
 
     @field_validator('captured_at')
     @classmethod

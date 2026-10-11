@@ -106,7 +106,9 @@ async def test_identity_changes_to_unrelated_user_issuer_name_do_not_create_fake
 
 @pytest.mark.asyncio
 async def test_unrelated_external_search_noise_does_not_block_proven_official_change():
-    organic=[{'link':'https://another.example/blog', 'title':'Audit Issuer corrigendum', 'snippet':'Note A/2026 extension'},
+    # Different reference: the previous A/2026 fixture was a material unresolved
+    # lead, not unrelated noise under the current-governing-state contract.
+    organic=[{'link':'https://another.example/blog', 'title':'Audit Issuer corrigendum', 'snippet':'Note B/2026 extension'},
              {'link':ORIGINAL}, {'link':CORRECTION}]
     engine,_,_=workflow(organic,{ORIGINAL:ORIG_HTML,CORRECTION:UPDATE_HTML})
     outcome=await engine.check(request())
@@ -124,7 +126,11 @@ async def test_official_result_noise_cannot_exhaust_source_cap_before_relevance_
     organic += [{'link':CORRECTION,'title':'Corrigendum A/2026'}]
     engine,_,_=workflow(organic,pages)
     out=await engine.check(request())
-    assert out.analysis.verdict == Verdict.SUPERSEDED, f'{out.analysis.verdict}: {out.warnings}'
+    # A title is only a discovery lead, not proof that omitted official bytes
+    # are irrelevant. The source budget must not silently become completeness.
+    assert out.analysis.verdict == Verdict.UNRESOLVED, f'{out.analysis.verdict}: {out.warnings}'
+    assert out.analysis.coverage.value == 'INSUFFICIENT'
+    assert 'SOURCE_CANDIDATE_BUDGET_EXCEEDED' in out.warnings
 
 
 def test_old_authority_attestation_should_not_be_unboundedly_trusted():

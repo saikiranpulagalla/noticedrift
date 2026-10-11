@@ -4,6 +4,7 @@ import re
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 from pydantic import BaseModel
+from app.url_credentials import credential_query_key
 
 SENSITIVE_KEYS = {"api_key", "apikey", "api-key", "x-api-key", "access_token", "id_token", "auth",
                   "authorization", "token", "secret", "password", "cookie", "key", "credential",
@@ -11,7 +12,7 @@ SENSITIVE_KEYS = {"api_key", "apikey", "api-key", "x-api-key", "access_token", "
 
 def _sensitive(key):
     k = re.sub(r"[^a-z0-9]", "", str(key).lower())
-    return k in {re.sub(r"[^a-z0-9]", "", s) for s in SENSITIVE_KEYS} or k.endswith(("token", "secret", "password"))
+    return k in {re.sub(r"[^a-z0-9]", "", s) for s in SENSITIVE_KEYS} or credential_query_key(str(key))
 
 def sanitize_url(url: str) -> str:
     parts = urlsplit(url)

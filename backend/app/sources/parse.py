@@ -73,6 +73,15 @@ def _css_visibility_rules(css: str):
                 yield selector, body, conditional
 
 
+def _closed_html_container(node, root) -> bool:
+    if node.name == 'dialog' and not node.has_attr('open'):
+        return True
+    if node.name == 'details' and not node.has_attr('open'):
+        summary = node.find('summary', recursive=False)
+        return summary is None or not (root is summary or summary in root.parents)
+    return False
+
+
 def _parse_text(s: SourceSnapshot) -> ParsedSource:
     if s.content_type == 'text/plain':
         try:
@@ -87,6 +96,13 @@ def _parse_text(s: SourceSnapshot) -> ParsedSource:
     soup = BeautifulSoup(s.body, 'lxml')
     # These elements never serve as decisive evidence; remove executable and navigation noise.
     style_rules = [tag.get_text(' ', strip=True) for tag in soup.find_all('style')]
+    # Unfetched stylesheets can affect any evidence element. Their URL or
+    # placement outside <main> does not establish irrelevance. Never fetch CSS.
+    external_styles = any('stylesheet' in tag.get('rel', []) and not tag.has_attr('disabled')
+                          for tag in soup.find_all('link'))
+    for css in style_rules:
+        tokens = re.sub(r'/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', '', css, flags=re.S)
+        external_styles |= bool(re.search(r'(?:^|;)\s*@import\b', tokens, re.I))
     for tag in soup(['script', 'style', 'template', 'noscript', 'svg', 'nav']):
         tag.decompose()
     for comment in soup.find_all(string=lambda value: isinstance(value, Comment)):
@@ -98,8 +114,29 @@ def _parse_text(s: SourceSnapshot) -> ParsedSource:
         if getattr(ancestor, 'attrs', None) is not None:
             if _html_visibility_uncertain(ancestor):
                 return _parsed(s, '', 'UNSUPPORTED', ['HIDDEN_EVIDENCE_ROOT'])
+            if _closed_html_container(ancestor, root):
+                return _parsed(s, '', 'UNSUPPORTED', ['CLOSED_EVIDENCE_ROOT'])
+    if external_styles:
+        warnings.append('EXTERNAL_STYLESHEET_VISIBILITY_UNVERIFIED')
+    # Native HTML controls have visibility semantics even without CSS.
+    for tag in list(root.find_all(['dialog', 'details'])):
+        if tag.parent is None or tag.has_attr('open'):
+            continue
+        if tag.name == 'dialog':
+            tag.decompose()
+        else:
+            summary = tag.find('summary', recursive=False)
+            for child in list(tag.contents):
+                if child is not summary:
+                    child.extract()
     # Comments and quoted third-party speech are never issuer-authored declarations.
     for tag in root.find_all(['blockquote', 'q', 'aside', 'footer']):
+        if tag.name == 'footer' and re.search(
+                r'(?im)^\s*(?:scope|applicability|applicable|applies|effective(?:ness)?|conditions?|(?:this|the)\s+(?:notice|recruitment|extension|cancellation))\b',
+                tag.get_text('\n', strip=True)):
+            # Still do not admit footer assertions. But dropping an apparent
+            # governing qualifier must not turn a scoped body into ALL.
+            warnings.append('HTML_FOOTER_QUALIFIER_UNVERIFIED')
         tag.decompose()
     for tag in root.find_all(True):
         hints = ' '.join(str(x) for x in [tag.get('id',''), *tag.get('class',[])]).casefold()

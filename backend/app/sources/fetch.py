@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from urllib.parse import urljoin, urlsplit, quote, parse_qsl
 from .models import SourceFailure, SourceErrorCode, SourceSnapshot
+from app.url_credentials import has_url_credentials
 
 _MAX_BYTES = 8_000_000
 _REDIRECT_CODES = {301, 302, 303, 307, 308}
@@ -56,9 +57,7 @@ def safe_target(url: str) -> tuple[str, str, int, str]:
         if port != (443 if u.scheme == 'https' else 80):
             raise ValueError()
         # Do not persist or transmit URLs carrying credential-like query fields.
-        sensitive = {'api_key','apikey','access_token','id_token','token','authorization',
-                     'secret','signature','sig','password','x-amz-signature','x-goog-signature'}
-        if any(key.casefold() in sensitive for key, _ in parse_qsl(u.query, keep_blank_values=True)):
+        if has_url_credentials(url):
             raise ValueError()
         path = (u.path or '/') + (('?' + u.query) if u.query else '')
         if len(path) > 4096:

@@ -551,6 +551,21 @@ def analyze(
         for field in input_fields.keys()
     )
 
+    # Resolution of admitted evidence is not assurance of the current state
+    # when required discovery/source examination is incomplete. Preserve an
+    # established conflict, but expose no resolved governing value otherwise.
+    if coverage != EvidenceCoverage.ADEQUATE:
+        if any(r.status == FieldResolutionStatus.CONFLICT for r in resolutions):
+            return AnalysisResult(verdict=Verdict.CONFLICT, coverage=coverage,
+                                  family_id=family.family_id, field_resolutions=resolutions)
+        uncertain = tuple(r.model_copy(update={
+            'status': FieldResolutionStatus.UNRESOLVED, 'value': None,
+            'source_document_id': None, 'reason': 'EVIDENCE_COVERAGE_INADEQUATE',
+        }) for r in resolutions)
+        return AnalysisResult(verdict=Verdict.UNRESOLVED, coverage=coverage,
+                              family_id=family.family_id, field_resolutions=uncertain,
+                              warnings=('EVIDENCE_COVERAGE_INADEQUATE',))
+
     cancelled, cancel_unresolved = _full_cancelled(fam_events, binds, context, docs)
     if cancelled and not cancel_unresolved:
         return AnalysisResult(verdict=Verdict.CANCELLED, coverage=coverage, family_id=family.family_id,
@@ -578,14 +593,12 @@ def analyze(
         return AnalysisResult(verdict=Verdict.CONFLICT, coverage=coverage, family_id=family.family_id,
                               field_resolutions=resolutions)
 
-    if cancel_unresolved or parser_block or ambiguous_comparisons or coverage != EvidenceCoverage.ADEQUATE or any(r.status == FieldResolutionStatus.UNRESOLVED for r in resolutions):
+    if cancel_unresolved or parser_block or ambiguous_comparisons or any(r.status == FieldResolutionStatus.UNRESOLVED for r in resolutions):
         warnings = []
         if cancel_unresolved:
             warnings.append("Cancellation/reopening lineage could not be safely established.")
         if parser_block:
             warnings.append("A strongly bound source could not be safely parsed.")
-        if coverage != EvidenceCoverage.ADEQUATE:
-            warnings.append("Evidence coverage was not adequate for positive assurance.")
         return AnalysisResult(verdict=Verdict.UNRESOLVED, coverage=coverage, family_id=family.family_id,
                               field_resolutions=resolutions, warnings=tuple(warnings))
 

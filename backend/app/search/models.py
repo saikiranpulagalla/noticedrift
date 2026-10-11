@@ -4,6 +4,7 @@ from enum import Enum
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from urllib.parse import urlsplit
 import ipaddress
+from app.url_credentials import has_url_credentials
 
 class FrozenModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -44,7 +45,7 @@ class OrganicResult(FrozenModel):
     def safe_link(cls, value: str) -> str:
         try:
             u = urlsplit(value)
-            if u.scheme.lower() not in {"http", "https"} or not u.hostname or u.username or u.password:
+            if u.scheme.lower() not in {"http", "https"} or not u.hostname or u.username or u.password or has_url_credentials(value):
                 raise ValueError("UNSAFE_SEARCH_URL")
             hostname = u.hostname.casefold().rstrip(".")
             # RFC-informal numeric IPv4 forms can resolve to local addresses in browsers.

@@ -108,10 +108,12 @@ async def test_provider_failure_never_positive():
 
 @pytest.mark.asyncio
 async def test_unknown_host_never_fetched():
-    w,_,transport=workflow([ORIGINAL,UNTRUSTED],{ORIGINAL:ORIG_HTML})
+    # A material lead identifies this family, not merely a generic corrigendum.
+    related = UNTRUSTED + '?reference=A%2F2026'
+    w,_,transport=workflow([ORIGINAL,related],{ORIGINAL:ORIG_HTML})
     out=await w.check(request())
     assert out.analysis.verdict == Verdict.UNRESOLVED
-    assert UNTRUSTED not in transport.calls
+    assert related not in transport.calls
 
 @pytest.mark.asyncio
 async def test_missing_original_abstains():

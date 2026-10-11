@@ -10,6 +10,8 @@ from hashlib import sha256
 import os
 import re
 import time
+import errno
+from contextlib import contextmanager
 from threading import RLock
 from pathlib import Path
 from uuid import uuid4
@@ -31,6 +33,51 @@ class SnapshotStore:
             raise SourceFailure(SourceErrorCode.SOURCE_INTEGRITY_ERROR)
         return self.root / (digest + '.json')
 
+    @contextmanager
+    def _directory_capacity_lock(self):
+        """Serialize quota check plus publication across instances/processes.
+
+        OS-owned locks are released on process exit. The stable lock file must
+        never be unlinked: recreating it could give writers different locks.
+        Temporary envelope creation remains outside this short critical section.
+        """
+        try:
+            with os.fdopen(os.open(self.root / '.capacity.lock', os.O_RDWR | os.O_CREAT, 0o600),
+                           'r+b', buffering=0) as stream:
+                if os.name == 'nt':
+                    import msvcrt
+
+                    def lock():
+                        stream.seek(0)
+                        msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+
+                    def unlock():
+                        stream.seek(0)
+                        msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    def lock():
+                        fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+                    def unlock():
+                        fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+                deadline = time.monotonic() + 2.0
+                while True:
+                    try:
+                        lock()
+                        break
+                    except OSError as exc:
+                        if exc.errno not in {errno.EACCES, errno.EAGAIN} or time.monotonic() >= deadline:
+                            raise SourceFailure(SourceErrorCode.STORAGE_ERROR) from None
+                        time.sleep(0.02)
+                try:
+                    yield
+                finally:
+                    unlock()
+        except OSError:
+            raise SourceFailure(SourceErrorCode.STORAGE_ERROR) from None
+
     @staticmethod
     def _publish_atomically(tmp: Path, path: Path) -> None:
         """Atomically publish a completed same-directory envelope.
@@ -51,6 +98,11 @@ class SnapshotStore:
         raise SourceFailure(SourceErrorCode.STORAGE_ERROR) from last_error
 
     def put(self, snapshot: SourceSnapshot) -> str:
+        # model_copy() can bypass validation: revalidate at the persistence boundary.
+        try:
+            snapshot = SourceSnapshot.model_validate(snapshot.model_dump())
+        except ValueError:
+            raise SourceFailure(SourceErrorCode.SOURCE_INTEGRITY_ERROR) from None
         # Base64 is deliberate: JSON envelope permits exact bytes, no lossy recoding.
         record = snapshot.model_dump(exclude={'body'}, mode='json')
         record['body_base64'] = base64.b64encode(snapshot.body).decode('ascii')
@@ -71,7 +123,7 @@ class SnapshotStore:
             # Retain every distinct capture event for forensic replay, but never
             # let the local snapshot archive grow without a hard bound. Refuse
             # new captures on exhaustion: no evidence is silently evicted.
-            with self._capacity_lock:
+            with self._capacity_lock, self._directory_capacity_lock():
                 if path.exists():
                     existing = self.get(digest)
                     if existing.body != snapshot.body:

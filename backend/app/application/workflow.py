@@ -7,7 +7,7 @@ Unknown corrections, unverified hosts, partial parsing and incomplete searches a
 from __future__ import annotations
 from datetime import timezone, datetime, timedelta
 from hashlib import sha256
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, unquote
 import re
 import asyncio
 import tempfile
@@ -32,6 +32,27 @@ from .extract import extract_notice, ExtractionUnresolved
 from .models import NoticeCheckRequest, CheckOutcome, SourceTrace
 
 MAX_CANDIDATES = 12
+
+
+def _material_external_lead(result, req, update_words) -> bool:
+    """Identify a specific family/update lead, never authenticate its claims.
+
+    An update word or an issuer name alone is low-specificity noise. Match the
+    complete normalized reference with token boundaries, not a shared prefix.
+    Explicit contradictory issuer labels describe a different candidate family.
+    Unstructured attribution, dates and quoted changes cannot establish that a
+    matching lead is already resolved, duplicated or inapplicable.
+    """
+    text = normalize_reference(' '.join((result.title or '', result.snippet or '', unquote(result.link))))
+    reference = normalize_reference(req.reference_number)
+    if not re.search(r'(?<![\w/-])' + re.escape(reference) + r'(?![\w/-])', text):
+        return False
+    if not update_words.search(text):
+        return False
+    labels = re.findall(r'(?im)\bissuer\s*:\s*([^;\n]+)', (result.title or '') + '\n' + (result.snippet or ''))
+    if labels and all(normalize_reference(label) != normalize_reference(req.issuer_name) for label in labels):
+        return False
+    return True
 
 
 async def _drained_thread(func, *args, **kwargs):
@@ -120,7 +141,6 @@ class NoticeWorkflow:
         urls = list(dict.fromkeys([req.original_url] if req.original_url else []))
         external_related = False
         ordered_official: list[str] = []
-        ranked_official: list[str] = []
         update_words = re.compile(r'(?i)\b(corrigendum|extension|extended|revised|cancel(?:led|lation)|addendum|reopening|withdrawn)\b')
         for response in execution.responses:
             if response.status != SearchStatus.OK:
@@ -131,39 +151,19 @@ class NoticeWorkflow:
                     continue
                 host = urlsplit(url).hostname
                 if host not in hosts:
-                    identity_hint = (req.reference_number.casefold() in ((result.title or '')+' '+(result.snippet or '')+' '+url).casefold())
-                    correction_hint = bool(update_words.search((result.title or '')+' '+(result.snippet or '')+' '+url))
-                    if correction_hint and (identity_hint or req.issuer_name.casefold() in ((result.title or '')+' '+(result.snippet or '')).casefold()):
-                        external_related = True
-                        continue
-                    if update_words.search(urlsplit(url).path) or req.reference_number.casefold() in url.casefold():
-                        external_related = True
-                        continue
+                    external_related |= _material_external_lead(result, req, update_words)
                     continue
                 if url not in ordered_official and url not in urls:
                     ordered_official.append(url)
-                candidate_text = ' '.join((url, result.title or '', result.snippet or '')).casefold()
-                if (normalize_reference(req.reference_number).casefold() in candidate_text
-                        or update_words.search(candidate_text)) and url not in ranked_official:
-                    ranked_official.append(url)
         total_candidates = len(urls) + len(ordered_official)
         source_overflow = total_candidates > MAX_CANDIDATES
-        if not source_overflow:
-            # Normal case preserves all source order and deterministic trace order.
-            urls.extend(ordered_official)
-        else:
-            # Without any strong discovery candidate, arbitrary truncation is
-            # unsafe. Refuse before fetching or publishing a positive result.
-            if len(ranked_official) < 2 and not req.original_url:
-                return _unknown(family_id,mode,execution.attempts,entries,
-                    reason='SOURCE_CANDIDATE_BUDGET_EXCEEDED')
-            selected = list(dict.fromkeys(urls + ranked_official))
-            if len(selected) > MAX_CANDIDATES:
-                return _unknown(family_id,mode,execution.attempts,entries,
-                    reason='SOURCE_CANDIDATE_BUDGET_EXCEEDED')
-            selected.extend(url for url in ordered_official
-                            if url not in selected and len(selected) < MAX_CANDIDATES)
-            urls = selected
+        if source_overflow:
+            # Search completion is not source-examination completion. Titles,
+            # snippets and a proven intermediate change cannot rule out a later
+            # governing document among unexamined official candidates.
+            return _unknown(family_id,mode,execution.attempts,entries,
+                reason='SOURCE_CANDIDATE_BUDGET_EXCEEDED')
+        urls.extend(ordered_official)
         if not urls:
             return _unknown(family_id,mode,execution.attempts,entries,reason='NO_OFFICIAL_CANDIDATES')
         family = NoticeFamily(family_id=family_id, issuer_id=req.issuer_id,
@@ -288,13 +288,7 @@ class NoticeWorkflow:
                 issued_at=info.issued_at,evidence_text=span.quotation))
             predecessor=eid
             predecessor_date=info.issued_at
-        # Unscreened low-relevance source overflow cannot support a positive
-        # no-change assertion. An explicitly grounded change may be reported
-        # with a limitation, but unknown later governing updates remain a risk.
-        if source_overflow and current == req.supplied_deadline:
-            return _unknown(family_id,mode,execution.attempts,entries,traces,
-                reason='OFFICIAL_SOURCE_OVERFLOW_UNRESOLVED')
-        if external_related and current == req.supplied_deadline:
+        if external_related:
             return _unknown(family_id,mode,execution.attempts,entries,traces,
                 reason='UNVERIFIED_RELATED_SEARCH_CANDIDATE')
         analysis=analyze(family,{CriticalField.DEADLINE:req.supplied_deadline},documents,events,bindings,

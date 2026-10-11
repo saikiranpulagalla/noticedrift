@@ -27,6 +27,7 @@ SCOPE_TERMS = re.compile(
 CONDITIONAL_TERMS = re.compile(
     r"(?i)\b(?:if|unless|subject\s+to|pending|proposed|proposal|tentative|contingent\s+on|upon)\b"
 )
+DOCUMENT_APPLICABILITY = re.compile(r'(?im)^\s*(?:scope|applicability|applicable|applies)\b')
 HISTORICAL_DEADLINE_CONTEXT = re.compile(r"(?i)\b(?:original|previous|old|instead\s+of)\b")
 
 class ExtractionUnresolved(ValueError):
@@ -120,6 +121,16 @@ def extract_notice(parsed: ParsedSource, reference: str) -> ExtractedNotice:
         raise ExtractionUnresolved('CONTRADICTORY_OR_ATTRIBUTION_CONTEXT')
     if SCOPE_TERMS.search(parsed.text):
         raise ExtractionUnresolved("SCOPED_NOTICE_UNSUPPORTED")
+    # A document-level applicability declaration need not be adjacent to the
+    # operative sentence. This narrow grammar cannot establish its extent.
+    if DOCUMENT_APPLICABILITY.search(parsed.text):
+        raise ExtractionUnresolved("DOCUMENT_APPLICABILITY_UNSUPPORTED")
+    # Attached conditions may be separated by administrative text. Only formal
+    # operative declarations are screened here, not incidental "if" in help text.
+    for line in parsed.text.splitlines():
+        if (re.match(r'(?i)^\s*(?:conditions?|effectiveness|effective\b|(?:this|the)\s+(?:notice|recruitment|extension|cancellation))\b', line)
+                and (CONDITIONAL_TERMS.search(line) or re.match(r'(?i)^\s*effective', line))):
+            raise ExtractionUnresolved("DOCUMENT_EFFECTIVENESS_UNSUPPORTED")
     extended = list(EXTENSION.finditer(parsed.text))
     cancelled = list(CANCELLATION.finditer(parsed.text))
     if len(extended) == 1 and not cancelled:
@@ -135,6 +146,11 @@ def extract_notice(parsed: ParsedSource, reference: str) -> ExtractedNotice:
             previous_deadline=date_value(a.group(1)), previous_text=a.group(1),
             relation_quote=a.group(0))
     if len(cancelled) == 1 and not extended:
+        relation = cancelled[0]
+        if not _relation_is_standalone(parsed.text, relation):
+            raise ExtractionUnresolved("QUALIFIED_CANCELLATION_UNSUPPORTED")
+        if _relation_has_nearby_condition(parsed.text, relation):
+            raise ExtractionUnresolved("CONDITIONAL_NOTICE_UNSUPPORTED")
         if ORIGINAL.search(parsed.text):
             raise ExtractionUnresolved("CANCELLATION_WITH_DEADLINE_AMBIGUITY")
         return ExtractedNotice(role=DocumentRole.CANCELLATION, issued_at=issued_at,

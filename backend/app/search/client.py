@@ -48,6 +48,19 @@ def parse_provider_payload(payload: object, planned: PlannedQuery, *, captured: 
             if not isinstance(echoed, str) or re.sub(r"\s+", " ", echoed).strip() != re.sub(r"\s+", " ", planned.query).strip():
                 return SearchResponse(**defaults, **metadata_fields, status=SearchStatus.ERROR,
                                       error_code="EXECUTED_QUERY_MISMATCH")
+        # Optional provider echoes are not required, but explicit contradictions
+        # cannot count as completion of this engine/localization/freshness plan.
+        expected = dict(request_parameters)
+        expected.setdefault('engine', 'google')
+        for key in ('engine', 'gl', 'hl', 'no_cache'):
+            if key not in search_parameters or key not in expected:
+                continue
+            actual = search_parameters[key]
+            if key == 'no_cache' and isinstance(actual, bool):
+                actual = str(actual).lower()
+            if not isinstance(actual, str) or actual.casefold() != expected[key].casefold():
+                return SearchResponse(**defaults, **metadata_fields, status=SearchStatus.ERROR,
+                                      error_code="EXECUTION_PARAMETERS_MISMATCH")
     if status_normalized in {"error", "processing", "queued"}:
         return SearchResponse(**defaults, **metadata_fields, status=SearchStatus.ERROR,
                               error_code=("PROVIDER_" + status_normalized.upper()),
