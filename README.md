@@ -116,19 +116,19 @@ If another application occupies port 8000, use an available localhost port such 
 .\scripts\final_release_check.ps1 -Python .\.venv\Scripts\python.exe
 ```
 
-**Offline and local verification of the repairs published in `3dcdcd9c5caa73f745565fbf2b1f37f85b71f8ad`:**
+**Offline and local verification of the exact application candidate published in `36fab589b4b9f1abf7eb6abd249fd04e0a578135`:**
 
 | Gate | Observed Windows result |
 |---|---|
 | Runtime | Windows Python 3.11.9 |
-| Full suite | **673 passed, 0 failed, 0 skipped** |
-| Exact combined line-and-branch coverage | **95.18072289156626%** |
+| Full suite | **778 passed, 0 failed, 0 skipped** |
+| Exact combined line-and-branch coverage | **95.4020035961983%** |
 | Stability | **3/3 passed** |
-| Focused repair regressions | 150 combined focused checks passed, including 23 P0, 20 CSS visibility and 35 new current-governing-contract tests |
+| Added repair regressions | 105 added tests |
 | Dependency check and complete PowerShell checker | **PASS; checker exit 0** |
 | Local HTTP smoke and child-server cleanup | **PASS** |
 
-These are **offline and local verification results only**. Live end-to-end SerpApi discovery, authenticated government-source resolution and separate browser visual verification remain **UNVERIFIED**. Coverage measures exercised lines and branches, not universal semantic correctness.
+These are **offline and local verification results only**. Complete live SerpApi-to-government-source verification and authenticated government-source resolution remain **UNVERIFIED**. Separate browser visual verification was **not performed**. Coverage measures exercised lines and branches, not universal semantic correctness.
 
 The PowerShell checker defaults to the project's `.venv` Python 3.11 executable, never a global Python selected from PATH. It verifies the exact synthetic execution mode and `SYNTHETIC` search entries as well as the recorded diagnostic's conservative outcome.
 
@@ -172,6 +172,8 @@ docs/                     architecture, repair notes, submission materials
 - Ambiguous notice relationships, partial parsing, and scoped or conflicting amendments fail closed.
 - Provider timeouts prevent complete search coverage.
 - Web search cannot prove the global absence of a later correction.
+- Synchronous DNS resolution lacks a guaranteed wall-clock deadline.
+- PDF inspection work is bounded, but some PDF processing has no universal execution-time guarantee.
 - Snapshot hashes establish byte identity, not publisher signatures or protection against a local administrator replacing evidence; private storage permissions remain required.
 
 ## Further reading
