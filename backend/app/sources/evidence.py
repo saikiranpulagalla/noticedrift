@@ -164,6 +164,14 @@ def admit_document(snapshot: SourceSnapshot, parsed: ParsedSource,
         raise SourceFailure(SourceErrorCode.SOURCE_INTEGRITY_ERROR)
     if sha256(parsed.text.encode('utf-8')).hexdigest() != parsed.normalized_text_sha256:
         raise SourceFailure(SourceErrorCode.SOURCE_INTEGRITY_ERROR)
+    # A shared official host cannot overwrite an explicit, contradictory issuer
+    # declaration with the request's identity. Missing declarations still rely
+    # on the operator's independently approved publication policy.
+    labels = re.findall(r'(?im)^\s*(?:issued\s+by|issuer\s*:)\s*([^\n]+)', parsed.text)
+    canonical = registry.issuer_label(identity.issuer_id) or identity.issuer_name
+    if any(label.strip().rstrip('.').casefold() != canonical.strip().rstrip('.').casefold()
+           for label in labels):
+        raise SourceFailure(SourceErrorCode.UNVERIFIED_AUTHORITY)
     # This is role screening, not full governance proof. The domain still demands
     # explicit grounded events and a verified issuer/identity before any verdict.
     keywords = {

@@ -30,6 +30,20 @@ CONDITIONAL_TERMS = re.compile(
 DOCUMENT_APPLICABILITY = re.compile(r'(?im)^\s*(?:scope|applicability|applicable|applies)\b')
 HISTORICAL_DEADLINE_CONTEXT = re.compile(r"(?i)\b(?:original|previous|old|instead\s+of)\b")
 
+
+def operative_qualification(text: str) -> bool:
+    """Recognize unsupported recipient scope and operative legal conditions.
+
+    These are grammatical relationships, not named regions, courts or boards.
+    The supported whole-notice grammar cannot resolve their applicability.
+    """
+    return bool(re.search(
+        r'(?im)^\s*(?:applicable\s+(?:only|solely|exclusively)\s+to\b|(?:only|solely|exclusively)\s+(?:the\s+)?'
+        r'(?:candidates?|applicants?|persons?|posts?|categories|regions?)\b'
+        r'|(?:this|the)\s+(?:extension|cancellation|notice|recruitment|deadline)\b'
+        r'[^\n]*(?:\b(?:only\s+(?:after|when)|stayed|suspended|become\s+operative|'
+        r'comes?\s+into\s+(?:force|effect)|subject\s+to|contingent\s+on)\b))', text))
+
 class ExtractionUnresolved(ValueError):
     pass
 
@@ -86,7 +100,10 @@ def _relation_has_nearby_condition(text: str, relation: re.Match[str]) -> bool:
                 nearby.append(lines[index - 1])
             if index + 1 < len(lines):
                 nearby.append(lines[index + 1])
-            return any(CONDITIONAL_TERMS.search(value) for value in nearby)
+            return any(CONDITIONAL_TERMS.search(value) and (
+                re.match(r'(?i)^\s*(?:if|unless|subject\s+to|pending|proposed|conditions?|effective)', value)
+                or re.search(r'(?i)\b(?:deadline|extension|cancellation|recruitment|notice)\b', value)
+            ) for value in nearby)
         offset = line_end + 1
     return True
 
@@ -121,6 +138,8 @@ def extract_notice(parsed: ParsedSource, reference: str) -> ExtractedNotice:
         raise ExtractionUnresolved('CONTRADICTORY_OR_ATTRIBUTION_CONTEXT')
     if SCOPE_TERMS.search(parsed.text):
         raise ExtractionUnresolved("SCOPED_NOTICE_UNSUPPORTED")
+    if operative_qualification(parsed.text):
+        raise ExtractionUnresolved('OPERATIVE_QUALIFICATION_UNSUPPORTED')
     # A document-level applicability declaration need not be adjacent to the
     # operative sentence. This narrow grammar cannot establish its extent.
     if DOCUMENT_APPLICABILITY.search(parsed.text):

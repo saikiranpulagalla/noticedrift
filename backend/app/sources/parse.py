@@ -109,6 +109,27 @@ def _parse_text(s: SourceSnapshot) -> ParsedSource:
         comment.extract()
     root = soup.find('main') or soup.find('article') or soup.body or soup
     warnings = []
+    from app.application.extract import operative_qualification
+    if any(str(tag.get('http-equiv', '')).strip().casefold() == 'refresh'
+           for tag in soup.find_all('meta')):
+        warnings.append('HTML_REFRESH_TARGET_UNVERIFIED')
+    # Selecting one semantic region must not silently drop another publication
+    # region or its applicability heading. Navigation/quotation is not evidence.
+    if root.name in {'main', 'article'}:
+        for tag in soup.find_all(['main', 'article', 'header', 'section']):
+            if tag is root or root in tag.parents or tag in root.parents:
+                continue
+            if any(parent.name in {'nav', 'blockquote', 'q', 'aside'} for parent in tag.parents):
+                continue
+            outside = tag.get_text('\n', strip=True)
+            if operative_qualification(outside) or re.search(
+                    r'(?i)\b(?:reference|corrigendum|application\s+deadline|cancelled|extended)\b', outside):
+                warnings.append('HTML_PUBLICATION_REGION_INCOMPLETE')
+    for tag in list(root.find_all(['select', 'datalist', 'textarea'])):
+        if re.search(r'(?i)\b(?:deadline|extended|cancelled|corrigendum|reference)\b',
+                     tag.get_text(' ', strip=True)):
+            warnings.append('HTML_FORM_EVIDENCE_UNVERIFIED')
+        tag.decompose()
     # The selected evidence root and all ancestors must be visible, too.
     for ancestor in [root, *root.parents]:
         if getattr(ancestor, 'attrs', None) is not None:
@@ -131,9 +152,9 @@ def _parse_text(s: SourceSnapshot) -> ParsedSource:
                     child.extract()
     # Comments and quoted third-party speech are never issuer-authored declarations.
     for tag in root.find_all(['blockquote', 'q', 'aside', 'footer']):
-        if tag.name == 'footer' and re.search(
+        if tag.name == 'footer' and (operative_qualification(tag.get_text('\n', strip=True)) or re.search(
                 r'(?im)^\s*(?:scope|applicability|applicable|applies|effective(?:ness)?|conditions?|(?:this|the)\s+(?:notice|recruitment|extension|cancellation))\b',
-                tag.get_text('\n', strip=True)):
+                tag.get_text('\n', strip=True))):
             # Still do not admit footer assertions. But dropping an apparent
             # governing qualifier must not turn a scoped body into ALL.
             warnings.append('HTML_FOOTER_QUALIFIER_UNVERIFIED')
@@ -149,6 +170,14 @@ def _parse_text(s: SourceSnapshot) -> ParsedSource:
     for css in style_rules:
         visibility_rules = 0
         for selector, body, conditional in _css_visibility_rules(css):
+            if re.search(r'(?i)\bcontent\s*:', body) and re.search(r'::?(?:before|after)\b', selector):
+                base = re.sub(r'::?(?:before|after)\b', '', selector).strip()
+                try:
+                    matches = soup.select(base)
+                    if any(node is root or node in root.parents or root in node.parents for node in matches):
+                        warnings.append('CSS_GENERATED_CONTENT_UNVERIFIED')
+                except Exception:
+                    warnings.append('CSS_GENERATED_CONTENT_UNVERIFIED')
             body = re.sub(r'\s+', '', body.casefold())
             if any(token in body for token in ('display:none', 'visibility:hidden', 'opacity:0', 'filter:opacity(0)', 'color:transparent', 'font-size:0', 'clip-path:', 'transform:')):
                 visibility_rules += 1
@@ -217,6 +246,84 @@ def _parse_text(s: SourceSnapshot) -> ParsedSource:
     return _parsed(s, text, 'PARTIAL' if warnings else 'PARSED', warnings)
 
 
+def _pdf_visibility(page) -> list[str]:
+    """Bounded glyph/paint intersection checks, not a full PDF renderer.
+
+    Glyph checks catch partial covering of a deadline digit. A spatial index
+    avoids comparing every text command to every page paint operation.
+    Unknown paint, clipping and complex backgrounds remain unsupported.
+    """
+    import fitz
+    warnings = []
+    sequence = page.get_bboxlog()
+    traces = page.get_texttrace()
+    drawings = {item['seqno']: item for item in page.get_drawings()}
+    if len(sequence) > 20_000 or sum(len(item.get('chars', ())) for item in traces) > 50_000:
+        return ['PDF_VISIBILITY_WORK_LIMIT']
+    grid = {}
+    paints = {}
+    entries = 0
+
+    def cells(rect):
+        import math
+        if not all(math.isfinite(value) for value in rect) or rect.is_empty:
+            return ()
+        x0, y0, x1, y1 = (math.floor(value / 64) for value in rect)
+        if (x1-x0+1)*(y1-y0+1) > 20_000:
+            raise ValueError('PDF_GEOMETRY_WORK_LIMIT')
+        return ((x, y) for x in range(x0, x1+1) for y in range(y0, y1+1))
+
+    for index, item in enumerate(sequence):
+        if item[0] == 'ignore-text':
+            warnings.append('PDF_NONVISIBLE_TEXT')
+        if item[0] not in {'fill-path', 'fill-image', 'fill-shade'}:
+            continue
+        drawing = drawings.get(index)
+        if drawing is not None and drawing.get('fill_opacity', 1) == 0:
+            continue
+        rect = fitz.Rect(item[1])
+        paints[index] = (rect, drawing)
+        for cell in cells(rect):
+            entries += 1
+            if entries > 100_000:
+                return warnings + ['PDF_VISIBILITY_WORK_LIMIT']
+            grid.setdefault(cell, []).append(index)
+    comparisons = 0
+    for trace in traces:
+        if trace.get('type') == 3 or trace.get('opacity', 1) < .99:
+            warnings.append('PDF_NONVISIBLE_TEXT')
+        if float(trace.get('size', 0)) < 3:
+            warnings.append('PDF_TEXT_TOO_SMALL')
+        color = trace.get('color')
+        if isinstance(color, (list, tuple)) and len(color) == 3:
+            if sum(c*w for c, w in zip(color, (.2126, .7152, .0722))) > .88:
+                warnings.append('PDF_LOW_CONTRAST_UNVERIFIED')
+        for char in trace.get('chars', ()):
+            glyph = fitz.Rect(char[3])
+            candidates = set(index for cell in cells(glyph) for index in grid.get(cell, ()))
+            for index in candidates:
+                comparisons += 1
+                if comparisons > 100_000:
+                    return warnings + ['PDF_VISIBILITY_WORK_LIMIT']
+                paint, drawing = paints[index]
+                if not glyph.intersects(paint) or (glyph & paint).get_area() <= .01:
+                    continue
+                if index > trace.get('seqno', -1):
+                    warnings.append('PDF_TEXT_OCCLUSION_UNVERIFIED')
+                else:
+                    # Only a simple, opaque white rectangle is a supported
+                    # background for the separately checked dark glyphs.
+                    fill = drawing.get('fill') if drawing else None
+                    white = (drawing and drawing.get('fill_opacity', 1) >= .99
+                             and isinstance(fill, (tuple, list)) and len(fill) == 3
+                             and all(c >= .99 for c in fill)
+                             and len(drawing.get('items', ())) == 1
+                             and drawing['items'][0][0] == 're')
+                    if not white:
+                        warnings.append('PDF_BACKGROUND_PERCEPTIBILITY_UNVERIFIED')
+    return warnings
+
+
 def _parse_pdf(s: SourceSnapshot) -> ParsedSource:
     import fitz
     try:
@@ -238,45 +345,14 @@ def _parse_pdf(s: SourceSnapshot) -> ParsedSource:
             # Text-only extraction can include invisible glyphs or text obscured
             # by later fills. Such PDFs are never eligible to govern automatically.
             try:
-                sequence = page.get_bboxlog()
-                for index, item in enumerate(sequence):
-                    kind, bounds = item[0], fitz.Rect(item[1])
-                    if kind == 'ignore-text':
-                        warnings.append('PDF_NONVISIBLE_TEXT')
-                    if kind in {'fill-text','stroke-text'}:
-                        # A prior opaque fill/image can make dark ink invisible
-                        # against a dark background. This extractor cannot verify
-                        # background contrast, so it must not certify these glyphs.
-                        for earlier in sequence[:index]:
-                            if earlier[0] in {'fill-path','fill-image','fill-shade'}:
-                                background = fitz.Rect(earlier[1])
-                                if bounds.intersects(background) and (bounds & background).get_area() > bounds.get_area() * 0.20:
-                                    warnings.append('PDF_BACKGROUND_PERCEPTIBILITY_UNVERIFIED')
-                                    break
-                        for later in sequence[index + 1:]:
-                            if later[0] in {'fill-path','fill-image','fill-shade'}:
-                                overlay = fitz.Rect(later[1])
-                                if bounds.intersects(overlay) and (bounds & overlay).get_area() > bounds.get_area() * 0.20:
-                                    warnings.append('PDF_TEXT_OCCLUSION_UNVERIFIED')
-                                    break
-                for item in page.get_texttrace():
-                    if item.get('type') == 3 or item.get('opacity', 1) < 0.99:
-                        warnings.append('PDF_NONVISIBLE_TEXT')
-                    # Avoid governing assertions from nearly invisible/light or
-                    # sub-legible glyphs. A complex background cannot be proven
-                    # perceptible here: more elaborate artwork requires review.
-                    if float(item.get('size', 0)) < 3.0:
-                        warnings.append('PDF_TEXT_TOO_SMALL')
-                    color = item.get('color')
-                    if isinstance(color, (list, tuple)) and len(color) == 3:
-                        luminance = sum(c * coeff for c, coeff in zip(color, (0.2126, 0.7152, 0.0722)))
-                        if luminance > 0.88:
-                            warnings.append('PDF_LOW_CONTRAST_UNVERIFIED')
+                warnings.extend(_pdf_visibility(page))
             except (AttributeError, ValueError, RuntimeError):
                 warnings.append('PDF_VISIBILITY_UNVERIFIED')
             # Pages with images or table structures may contain visually important missing context.
-            if page.get_images(full=True):
+            if page.get_image_info() or page.get_images(full=True):
                 warnings.append('PDF_HAS_IMAGES')
+            if page.first_annot is not None:
+                warnings.append('PDF_ANNOTATIONS_UNVERIFIED')
             # Detect structured tables conservatively, without trusting flattened ordering.
             try:
                 if page.find_tables().tables:

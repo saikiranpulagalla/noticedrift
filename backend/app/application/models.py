@@ -1,5 +1,5 @@
 from __future__ import annotations
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.domain.models import AnalysisResult
 from app.search.models import SearchManifestEntry
@@ -37,6 +37,10 @@ class NoticeCheckRequest(FrozenModel):
     def require_aware(cls, v):
         if v.utcoffset() is None:
             raise ValueError('AS_OF_MUST_BE_TIMEZONE_AWARE')
+        try:
+            v.astimezone(timezone.utc)
+        except (OverflowError, ValueError):
+            raise ValueError('AS_OF_OUT_OF_SUPPORTED_RANGE') from None
         return v
 
 class SourceTrace(FrozenModel):

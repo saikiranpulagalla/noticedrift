@@ -567,6 +567,23 @@ def analyze(
                               warnings=('EVIDENCE_COVERAGE_INADEQUATE',))
 
     cancelled, cancel_unresolved = _full_cancelled(fam_events, binds, context, docs)
+    # A changed field cannot mask incompatible evidence or an unresolved
+    # potentially operative cancellation in this reusable multi-field API.
+    if any(r.status == FieldResolutionStatus.CONFLICT for r in resolutions):
+        return AnalysisResult(verdict=Verdict.CONFLICT, coverage=coverage,
+                              family_id=family.family_id, field_resolutions=resolutions)
+    active_status, _, _ = _build_active_event_set(fam_events, context.as_of, docs, binds, context)
+    # A standalone reopening label is not itself an operative cancellation.
+    # Preserve independently grounded, scoped amendments in that situation;
+    # an unresolved applicable cancellation must still block every assurance.
+    if cancel_unresolved and any(e.event_type == EventType.CANCELS for e in active_status.values()):
+        uncertain = tuple(r.model_copy(update={
+            'status': FieldResolutionStatus.UNRESOLVED, 'value': None,
+            'source_document_id': None, 'reason': 'UNRESOLVED_GOVERNING_STATUS',
+        }) for r in resolutions)
+        return AnalysisResult(verdict=Verdict.UNRESOLVED, coverage=coverage,
+                              family_id=family.family_id, field_resolutions=uncertain,
+                              warnings=('Cancellation/reopening lineage could not be safely established.',))
     if cancelled and not cancel_unresolved:
         return AnalysisResult(verdict=Verdict.CANCELLED, coverage=coverage, family_id=family.family_id,
                               field_resolutions=resolutions)
@@ -580,7 +597,8 @@ def analyze(
                     changed.append(r)
             except UnsupportedValue:
                 ambiguous_comparisons = True
-    if changed:
+    if changed and not ambiguous_comparisons and not any(
+            r.status == FieldResolutionStatus.UNRESOLVED for r in resolutions):
         changed_ids = {r.field for r in changed}
         adjusted = tuple(
             r.model_copy(update={"status": FieldResolutionStatus.CHANGED}) if r.field in changed_ids else r

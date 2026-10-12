@@ -7,7 +7,7 @@ Unknown corrections, unverified hosts, partial parsing and incomplete searches a
 from __future__ import annotations
 from datetime import timezone, datetime, timedelta
 from hashlib import sha256
-from urllib.parse import urlsplit, unquote
+from urllib.parse import urlsplit, unquote, urldefrag
 import re
 import asyncio
 import tempfile
@@ -120,6 +120,8 @@ class NoticeWorkflow:
             return _unknown(family_id,mode,0,reason='MULTIPLE_ISSUER_HOSTS_NOT_COVERED')
         if req.original_url and (urlsplit(req.original_url).hostname not in hosts):
             return _unknown(family_id,mode,0,reason='ORIGINAL_HOST_NOT_ATTESTED')
+        if req.original_url and not self.registry.verified(req.issuer_id, req.original_url):
+            return _unknown(family_id,mode,0,reason='ORIGINAL_PUBLICATION_PATH_NOT_ATTESTED')
         plan = plan_queries(reference_number=req.reference_number, issuer_name=req.issuer_name,
             title=req.notice_title, official_domain=sorted(hosts)[0])
         # Validate all CORE discovery queries preserve the *entire* literal
@@ -138,7 +140,7 @@ class NoticeWorkflow:
         # Search snippets discover candidates, NEVER establish a governing fact.
         # Treat a specifically relevant unauthenticated hit as a coverage blocker,
         # not as authority. Unrelated internet noise cannot consume our fetch cap.
-        urls = list(dict.fromkeys([req.original_url] if req.original_url else []))
+        urls = [urldefrag(req.original_url)[0]] if req.original_url else []
         external_related = False
         ordered_official: list[str] = []
         update_words = re.compile(r'(?i)\b(corrigendum|extension|extended|revised|cancel(?:led|lation)|addendum|reopening|withdrawn)\b')
@@ -147,11 +149,20 @@ class NoticeWorkflow:
                 return _unknown(family_id,mode,execution.attempts,entries,reason='SEARCH_RESPONSE_FAILED')
             for result in response.results:
                 url = result.link
-                if url in urls:
-                    continue
                 host = urlsplit(url).hostname
                 if host not in hosts:
                     external_related |= _material_external_lead(result, req, update_words)
+                    continue
+                from app.sources.fetch import safe_target
+                try:
+                    safe_target(url)
+                except SourceFailure:
+                    return _unknown(family_id,mode,execution.attempts,entries,
+                        reason='INVALID_SOURCE_CANDIDATE_URL')
+                # Only fragments are provably irrelevant to HTTP resource
+                # identity. Do not strip arbitrary query parameters.
+                url = urldefrag(url)[0]
+                if url in urls:
                     continue
                 if url not in ordered_official and url not in urls:
                     ordered_official.append(url)
@@ -257,7 +268,15 @@ class NoticeWorkflow:
         # never by arbitrary content hashes or same-day lexical ordering.
         pending = [(d,info,span) for d,info,span in extracted
                    if info.role != DocumentRole.ORIGINAL_NOTICE]
-        if any(info.issued_at.astimezone(timezone.utc).date() == as_of_utc.date() for _,info,_ in extracted):
+        # An issue date supplies neither a time nor an issuer timezone. Refuse
+        # the entire possible civil-day window rather than invent UTC midnight.
+        try:
+            intraday_uncertain = any(info.issued_at - timedelta(hours=14) <= as_of_utc
+                < info.issued_at + timedelta(days=1, hours=14) for _,info,_ in extracted)
+        except OverflowError:
+            return _unknown(family_id,mode,execution.attempts,entries,traces,
+                reason='ISSUANCE_DATE_RANGE_UNSUPPORTED')
+        if intraday_uncertain:
             return _unknown(family_id,mode,execution.attempts,entries,traces,
                 reason='DATE_ONLY_ISSUANCE_INTRADAY_UNRESOLVED')
         while pending:

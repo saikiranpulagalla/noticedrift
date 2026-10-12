@@ -10,6 +10,8 @@ import ipaddress
 import socket
 import ssl
 import re
+import time
+import math
 from datetime import datetime, timezone
 from hashlib import sha256
 from urllib.parse import urljoin, urlsplit, quote, parse_qsl
@@ -83,23 +85,97 @@ def public_addresses(host: str, port: int, *, resolve=socket.getaddrinfo) -> tup
         raise SourceFailure(SourceErrorCode.DNS_UNSAFE) from None
 
 
+class _DeadlineFile:
+    """Enforce one elapsed I/O budget, not a fresh inactivity timeout per read.
+
+    DNS remains synchronous and cannot be preempted safely here. No worker is
+    abandoned to disguise that limitation.
+    """
+    def __init__(self, raw, sock, deadline):
+        self.raw, self.sock, self.deadline = raw, sock, deadline
+        self.line_bytes = 0
+
+    def remaining(self):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('SOURCE_TRANSFER_DEADLINE')
+        self.sock.settimeout(remaining)
+        return remaining
+
+    def read(self, size=-1):
+        if size < 0:
+            raise ValueError('UNBOUNDED_SOURCE_READ')
+        chunks = []
+        count = 0
+        while count < size:
+            self.remaining()
+            chunk = self.raw.read1(min(size-count, 16_384))
+            self.remaining()
+            if not chunk:
+                break
+            chunks.append(chunk)
+            count += len(chunk)
+        return b''.join(chunks)
+
+    def readline(self, size=-1):
+        limit = min(size if size >= 0 else 65_536, 65_536)
+        line = bytearray()
+        while len(line) < limit:
+            piece = self.read(1)
+            if not piece:
+                break
+            line.extend(piece)
+            self.line_bytes += len(piece)
+            if self.line_bytes > 65_536:
+                raise SourceFailure(SourceErrorCode.OVERSIZED)
+            if piece == b'\n':
+                break
+        return bytes(line)
+
+    def close(self):
+        self.raw.close()
+
+    def flush(self):
+        if not self.raw.closed:
+            self.raw.flush()
+
+
+class _DeadlineSocket:
+    def __init__(self, sock, deadline):
+        self.sock, self.deadline = sock, deadline
+
+    def makefile(self, *args):
+        return _DeadlineFile(self.sock.makefile(*args), self.sock, self.deadline)
+
+
 class PinnedHTTPTransport:
     """Connection injection is intentionally narrow: fake transports can test fetch policy offline."""
     def __init__(self, *, resolve=socket.getaddrinfo, timeout=7.0):
+        if not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError('INVALID_SOURCE_TIMEOUT')
         self.resolve = resolve
         self.timeout = timeout
 
-    def get(self, url: str, max_bytes: int) -> tuple[int, dict[str, str], bytes]:
+    def get(self, url: str, max_bytes: int, *, deadline=None) -> tuple[int, dict[str, str], bytes]:
+        deadline = time.monotonic() + self.timeout if deadline is None else deadline
         scheme, host, port, path = safe_target(url)
         addresses = public_addresses(host, port, resolve=self.resolve)
         last_error = None
         for ip in addresses[:2]:  # Keep address fallback bounded under a deadline.
             sock = None
+            response = None
             try:
-                sock = socket.create_connection((ip, port), timeout=self.timeout)
-                sock.settimeout(self.timeout)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('SOURCE_TRANSFER_DEADLINE')
+                sock = socket.create_connection((ip, port), timeout=remaining)
+                sock.settimeout(max(deadline - time.monotonic(), 0.001))
                 if scheme == 'https':
                     sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('SOURCE_TRANSFER_DEADLINE')
+                sock.settimeout(remaining)
                 host_header = ('[' + host + ']') if ':' in host else host
                 encoded_path = quote(path, safe='/%?&=:@+$,;~*-._!')
                 request = (f'GET {encoded_path} HTTP/1.1\r\nHost: {host_header}\r\n'
@@ -107,25 +183,37 @@ class PinnedHTTPTransport:
                            'Accept: text/html,application/pdf,text/plain\r\n'
                            'Accept-Encoding: identity\r\nConnection: close\r\n\r\n')
                 sock.sendall(request.encode('ascii'))
-                response = http.client.HTTPResponse(sock)
+                response = http.client.HTTPResponse(_DeadlineSocket(sock, deadline))
                 response.begin()
                 headers = {key.lower(): value for key,value in response.getheaders()}
+                lengths = response.headers.get_all('Content-Length', [])
+                transfers = response.headers.get_all('Transfer-Encoding', [])
+                # Refuse ambiguous or unsupported framing rather than hashing an
+                # apparently complete, potentially truncated semantic prefix.
+                if (len(lengths) > 1 or len(transfers) > 1 or (lengths and transfers)
+                        or (lengths and not re.fullmatch(r'[0-9]+', lengths[0].strip()))
+                        or (transfers and transfers[0].strip().lower() != 'chunked')):
+                    raise SourceFailure(SourceErrorCode.HTTP_ERROR)
+                content_length = int(lengths[0]) if lengths else None
                 if response.status not in _REDIRECT_CODES:
-                    try:
-                        content_length = int(headers.get('content-length', '-1'))
-                        if content_length > max_bytes:
-                            raise SourceFailure(SourceErrorCode.OVERSIZED)
-                    except ValueError:
-                        pass
+                    if content_length is not None and content_length > max_bytes:
+                        raise SourceFailure(SourceErrorCode.OVERSIZED)
                 body = b'' if response.status in _REDIRECT_CODES else response.read(max_bytes + 1)
                 if len(body) > max_bytes:
                     raise SourceFailure(SourceErrorCode.OVERSIZED)
+                if (response.status not in _REDIRECT_CODES and content_length is not None
+                        and len(body) != content_length):
+                    raise SourceFailure(SourceErrorCode.HTTP_ERROR)
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('SOURCE_TRANSFER_DEADLINE')
                 return response.status, headers, body
             except SourceFailure:
                 raise
             except (OSError, ssl.SSLError, http.client.HTTPException, UnicodeError) as exc:
                 last_error = exc
             finally:
+                if response is not None:
+                    response.close()
                 if sock is not None:
                     sock.close()
         raise SourceFailure(SourceErrorCode.NETWORK_ERROR) from last_error
@@ -146,6 +234,8 @@ class SafeSourceFetcher:
         seen: set[str] = set()
         chain: list[str] = []
         current = url
+        deadline = (time.monotonic() + self.transport.timeout
+                    if isinstance(self.transport, PinnedHTTPTransport) else None)
         for step in range(self.max_redirects + 1):
             _, host, _, _ = safe_target(current)
             if allowed_hosts is not None and host not in allowed_hosts:
@@ -153,7 +243,10 @@ class SafeSourceFetcher:
             if current in seen:
                 raise SourceFailure(SourceErrorCode.REDIRECT_LIMIT)
             seen.add(current)
-            status, headers, body = self.transport.get(current, self.max_bytes)
+            if deadline is None:
+                status, headers, body = self.transport.get(current, self.max_bytes)
+            else:
+                status, headers, body = self.transport.get(current, self.max_bytes, deadline=deadline)
             if len(body) > self.max_bytes:
                 raise SourceFailure(SourceErrorCode.OVERSIZED)
             if status in _REDIRECT_CODES:

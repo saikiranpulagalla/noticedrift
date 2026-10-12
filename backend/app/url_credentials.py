@@ -14,5 +14,9 @@ def credential_query_key(key: str) -> bool:
 
 
 def has_url_credentials(url: str) -> bool:
-    return any(credential_query_key(key) for key, _ in
-               parse_qsl(urlsplit(url).query, keep_blank_values=True))
+    parts = urlsplit(url)
+    # Fragments are not sent over HTTP, but do enter discovery manifests and
+    # provenance. Treat fragment parameters (including router queries) equally.
+    return any(credential_query_key(key) for component in
+               (parts.query, parts.fragment, parts.fragment.partition('?')[2])
+               for key, _ in parse_qsl(component, keep_blank_values=True))

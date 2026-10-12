@@ -4,7 +4,7 @@ import re
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 from pydantic import BaseModel
-from app.url_credentials import credential_query_key
+from app.url_credentials import credential_query_key, has_url_credentials
 
 SENSITIVE_KEYS = {"api_key", "apikey", "api-key", "x-api-key", "access_token", "id_token", "auth",
                   "authorization", "token", "secret", "password", "cookie", "key", "credential",
@@ -19,7 +19,8 @@ def sanitize_url(url: str) -> str:
     hostname = parts.hostname or ""
     netloc = hostname + ((":" + str(parts.port)) if parts.port else "")
     q = [(k, "<redacted>" if _sensitive(k) else v) for k, v in parse_qsl(parts.query, keep_blank_values=True)]
-    return urlunsplit((parts.scheme, netloc, parts.path, urlencode(q), parts.fragment))
+    fragment = '' if has_url_credentials(urlunsplit(('', '', '', '', parts.fragment))) else parts.fragment
+    return urlunsplit((parts.scheme, netloc, parts.path, urlencode(q), fragment))
 
 def sanitize_for_persistence(value: Any) -> Any:
     if isinstance(value, BaseModel):
